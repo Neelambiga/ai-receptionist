@@ -173,6 +173,12 @@ const conversationSchema = new mongoose.Schema(
     departmentId: String,
     departmentName: String,
 
+    // Preserve the department requested in the initial message.
+    requestedDepartment: {
+      type: String,
+      default: "",
+    },
+
     providerOptions: {
       type: [String],
       default: [],
@@ -437,7 +443,7 @@ function parseDateInput(message) {
 }
 
 function askStart() {
-  return "Welcome to CareConnect! Are you an existing patient or a new patient?";
+  return "Welcome to CareConnect! How can I help you today?";
 }
 
 function formatSlots(slots) {
@@ -482,12 +488,8 @@ function formatAppointmentDetails(appointment, patient) {
 function formatExistingAppointment(appointment, patient) {
   return (
     `You already have an appointment with ${appointment.provider.name}!\n\n` +
-    `${formatAppointmentDetails(appointment, patient)}\n\n` +
-    "What would you like to do?\n" +
-    "1. Keep appointment\n" +
-    "2. Reschedule appointment\n" +
-    "3. Cancel appointment\n\n" +
-    'Please reply "keep", "reschedule", or "cancel".'
+    `${formatAppointmentDetails(appointment, patient)}\n\n` 
+    
   );
 }
 
@@ -521,6 +523,51 @@ function isCancelAction(message) {
     "3",
   ].includes(normalizeText(message));
 }
+
+
+function isYes(message) {
+  const text = normalizeText(message);
+
+  const exactMatches = [
+    "yes",
+    "y",
+    "existing",
+    "old",
+    "existing patient",
+    "i am existing",
+    "i am an existing patient",
+    "i am already registered",
+    "already registered",
+    "registered patient",
+    "returning patient",
+    "i have a patient id",
+  ];
+
+  return exactMatches.includes(text);
+}
+
+function isNo(message) {
+  const text = normalizeText(message);
+
+  const exactMatches = [
+    "no",
+    "n",
+    "new",
+    "new patient",
+    "register",
+    "register new",
+    "i am new",
+    "i am a new patient",
+    "i'm a new patient",
+    "not registered",
+    "first time",
+    "first time patient",
+    "i want to register",
+  ];
+
+  return exactMatches.includes(text);
+}
+
 
 /* =========================================================
    3. CONVERSATION STATE
@@ -623,6 +670,8 @@ async function findDepartment(message) {
     },
   });
 }
+
+
 
 /* =========================================================
    5. APPOINTMENT SLOT AVAILABILITY
@@ -887,6 +936,174 @@ async function seedData() {
    7. MAIN RECEPTIONIST CONVERSATION
 ========================================================= */
 
+
+
+async function classifyDepartmentWithOllama(message) {
+  const text = String(message || "").trim().toLowerCase();
+
+  // 1. Handle clear requests before calling the AI.
+  // This prevents the small model from misclassifying obvious phrases.
+  if (
+    /\b(heart specialist|heart doctor|cardiologist|cardiology)\b/i.test(text)
+  ) {
+    return "cardiology";
+  }
+
+  if (
+    /\b(dermatologist|dermatology|skin rash|rash|acne|skin itching)\b/i.test(text)
+  ) {
+    return "dermatology";
+  }
+
+  if (
+    /\b(general medicine|general physician|fever|cold|cough|headache)\b/i.test(text)
+  ) {
+    return "general_medicine";
+  }
+
+  // 2. Use Ollama for requests not covered by clear keyword rules.
+  try {
+    const response = await fetch("http://localhost:11434/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama3.2:1b",
+        stream: false,
+        messages: [
+          {
+            role: "system",
+            content: `Classify a routine appointment request into exactly one slug:
+general_medicine
+dermatology
+cardiology
+
+Fever, cold, cough, headache -> general_medicine
+Skin rash, acne, itching -> dermatology
+Heart specialist, heart doctor, cardiologist -> cardiology
+
+Reply with only one slug. If unclear, reply unknown.`,
+          },
+          {
+            role: "user",
+            content: text,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama returned HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    const result = String(data.message?.content || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z_]/g, "");
+
+    const allowedDepartments = [
+      "general_medicine",
+      "dermatology",
+      "cardiology",
+    ];
+
+    return allowedDepartments.includes(result) ? result : null;
+  } catch (error) {
+    console.error(
+      "Ollama department classification failed:",
+      error.message
+    );
+
+    return null;
+  }
+}
+
+
+async function understandReceptionIntent(message) {
+  try {
+    const response = await fetch(
+      "http://localhost:11434/api/chat",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "llama3.2:1b",
+          stream: false,
+          format: "json",
+          messages: [
+            {
+              role: "system",
+              content: `You are an intent classifier for a hospital receptionist.
+Return JSON only with keys "intent" and "department".
+
+Allowed intents:
+book_appointment, greeting, other
+
+Allowed departments:
+general_medicine, dermatology, cardiology, unknown
+
+Heart problems or a heart specialist means cardiology.
+Skin problems, acne, or rash means dermatology.
+Fever, cold, or cough means general_medicine.
+Requests to book or see a doctor mean book_appointment.
+Greetings alone mean greeting.
+For unclear departments, return unknown.
+Never provide medical advice.`,
+            },
+            {
+              role: "user",
+              content: String(message || "").trim(),
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(8000),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Ollama HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const parsed = JSON.parse(data.message?.content || "{}");
+
+    const allowedIntents = [
+      "book_appointment",
+      "greeting",
+      "other",
+    ];
+
+    const allowedDepartments = [
+      "general_medicine",
+      "dermatology",
+      "cardiology",
+      "unknown",
+    ];
+
+    return {
+      intent: allowedIntents.includes(parsed.intent)
+        ? parsed.intent
+        : "other",
+      department: allowedDepartments.includes(parsed.department)
+        ? parsed.department
+        : "unknown",
+    };
+  } catch (error) {
+    console.error("Reception intent AI failed:", error.message);
+
+    return {
+      intent: "other",
+      department: "unknown",
+    };
+  }
+}
+
+
 async function handleReceptionMessage(sessionId, rawMessage) {
   const message = String(rawMessage || "").trim();
 
@@ -926,10 +1143,48 @@ async function handleReceptionMessage(sessionId, rawMessage) {
      STEP 1: EXISTING OR NEW PATIENT
   ------------------------------------------------------- */
 
+
   if (state.step === "start") {
+    const aiResult = await understandReceptionIntent(message);
+
+    const departmentNames = {
+      general_medicine: "General Medicine",
+      dermatology: "Dermatology",
+      cardiology: "Cardiology",
+    };
+
+    // Only select a department when the patient's message
+    // explicitly mentions one. Do not trust an AI guess
+    // for a generic appointment request.
+    const normalizedMessage = normalizeText(message);
+
+    let requestedDepartment = null;
+
+    if (
+      /\b(general medicine|general physician|general doctor|primary care)\b/.test(
+        normalizedMessage
+      )
+    ) {
+      requestedDepartment = "general_medicine";
+    } else if (
+      /\b(dermatology|dermatologist|skin specialist|skin doctor)\b/.test(
+        normalizedMessage
+      )
+    ) {
+      requestedDepartment = "dermatology";
+    } else if (
+      /\b(cardiology|cardiologist|heart specialist|heart doctor)\b/.test(
+        normalizedMessage
+      )
+    ) {
+      requestedDepartment = "cardiology";
+    }
+
+    // Existing patient: keep the requested department for later.
     if (isYes(message)) {
       await saveConversation(sessionId, {
         step: "existing_patient_lookup",
+        requestedDepartment: requestedDepartment || state.requestedDepartment || "",
       });
 
       return {
@@ -939,9 +1194,11 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       };
     }
 
+    // New patient: keep the requested department for later.
     if (isNo(message)) {
       await saveConversation(sessionId, {
         step: "new_patient_details",
+        requestedDepartment: requestedDepartment || state.requestedDepartment || "",
       });
 
       return {
@@ -951,11 +1208,30 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       };
     }
 
+    // If the message contains a booking request, ask for patient type.
+    if (requestedDepartment || aiResult.intent === "book_appointment") {
+      await saveConversation(sessionId, {
+        step: "start",
+        requestedDepartment: requestedDepartment || state.requestedDepartment || "",
+      });
+
+      return {
+        reply:
+          "I can help you book an appointment" +
+          (requestedDepartment
+            ? ` in ${departmentNames[requestedDepartment]}`
+            : "") +
+          ". Are you an existing patient or a new patient?",
+        status: "waiting",
+      };
+    }
+
     return {
       reply: askStart(),
       status: "waiting",
     };
   }
+
 
   /* -------------------------------------------------------
      STEP 2: LOOK UP EXISTING PATIENT
@@ -992,14 +1268,26 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       patientMongoId: String(patient._id),
       patientId: patient.patientId,
       patientName: patient.name,
+      requestedDepartment: state.requestedDepartment || "",
       reschedulingAppointmentId: "",
       existingAppointmentId: "",
     });
 
+    const departmentNames = {
+      general_medicine: "General Medicine",
+      dermatology: "Dermatology",
+      cardiology: "Cardiology",
+    };
+
+    const requestedName =
+      departmentNames[state.requestedDepartment];
+
     return {
       reply:
         `Welcome back, ${patient.name}!\n` +
-        "Which department do you need? You can choose General Medicine, Dermatology, or Cardiology.",
+        (requestedName
+          ? `Let's continue with ${requestedName}.`
+          : "Which department do you need? You can choose General Medicine, Dermatology, or Cardiology."),
       status: "patient_found",
       patient,
       departments: await Department.find().sort({ name: 1 }).lean(),
@@ -1043,14 +1331,26 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       patientMongoId: String(patient._id),
       patientId: patient.patientId,
       patientName: patient.name,
+      requestedDepartment: state.requestedDepartment || "",
       reschedulingAppointmentId: "",
       existingAppointmentId: "",
     });
 
+    const departmentNames = {
+      general_medicine: "General Medicine",
+      dermatology: "Dermatology",
+      cardiology: "Cardiology",
+    };
+
+    const requestedName =
+      departmentNames[state.requestedDepartment];
+
     return {
       reply:
         `Patient registered successfully!\nPatient ID: ${patient.patientId}\n\n` +
-        "Which department do you need? You can choose General Medicine, Dermatology, or Cardiology.",
+        (requestedName
+          ? `Let's continue with ${requestedName}.`
+          : "Which department do you need? You can choose General Medicine, Dermatology, or Cardiology."),
       status: "patient_registered",
       patient,
       departments: await Department.find().sort({ name: 1 }).lean(),
@@ -1061,8 +1361,51 @@ async function handleReceptionMessage(sessionId, rawMessage) {
      STEP 4: SELECT DEPARTMENT
   ------------------------------------------------------- */
 
+
+
+  /* -------------------------------------------------------
+     STEP 4: SELECT DEPARTMENT
+  ------------------------------------------------------- */
+
+
   if (state.step === "department") {
-    const department = await findDepartment(message);
+    const aiResult = await understandReceptionIntent(message);
+
+    const aiDepartment =
+      aiResult.department !== "unknown"
+        ? aiResult.department
+        : state.requestedDepartment ||
+        await classifyDepartmentWithOllama(message);
+
+    const departmentNames = {
+      general_medicine: "General Medicine",
+      dermatology: "Dermatology",
+      cardiology: "Cardiology",
+    };
+
+    let department = null;
+
+    // Try the department identified by Ollama.
+    if (aiDepartment && departmentNames[aiDepartment]) {
+      department = await Department.findOne({
+        name: {
+          $regex: new RegExp(
+            "^" +
+            departmentNames[aiDepartment].replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&"
+            ) +
+            "$",
+            "i"
+          ),
+        },
+      });
+    }
+
+    // Fall back to the existing matcher.
+    if (!department) {
+      department = await findDepartment(message);
+    }
 
     if (!department) {
       return {
@@ -1073,21 +1416,30 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       };
     }
 
+    // Find active doctors in the selected department.
     const providers = await Provider.find({
-      departmentId: department._id,
-      active: true,
-    })
-      .sort({ name: 1 })
-      .lean();
-
+  active: true,
+  $or: [
+    { departmentId: department._id },
+    {
+      department: department._id,
+      departmentId: { $exists: false },
+    },
+  ],
+})
+  .select("name specialization department departmentId")
+  .sort({ name: 1 })
+  .lean();
     if (!providers.length) {
       return {
         reply:
-          "There are currently no doctors available in this department. Please select another department.",
+          `I identified ${department.name}, but no active doctors are currently listed for this department. Please select another department or contact reception.`,
         status: "no_providers",
+        departments: await Department.find().sort({ name: 1 }).lean(),
       };
     }
 
+    // Save the department and available doctor IDs.
     await saveConversation(sessionId, {
       step: "provider",
       departmentId: String(department._id),
@@ -1095,21 +1447,28 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       providerOptions: providers.map((provider) =>
         String(provider._id)
       ),
-      providerId: "",
-      providerName: "",
-      date: "",
-      slotOptions: [],
-      existingAppointmentId: "",
-      reschedulingAppointmentId: "",
     });
 
     return {
-      reply: `Please select a doctor from ${department.name}.`,
+      reply:
+        `I selected ${department.name} based on your request.\n\n` +
+        "Please choose a doctor by entering their number or name:\n\n" +
+        providers
+          .map(
+            (provider, index) =>
+              `${index + 1}. ${provider.name}` +
+              (provider.specialization
+                ? ` — ${provider.specialization}`
+                : "")
+          )
+          .join("\n"),
       status: "providers",
-      providers,
       department,
+      providers,
     };
   }
+
+
 
   /* -------------------------------------------------------
      STEP 5: SELECT DOCTOR
@@ -1466,7 +1825,7 @@ async function handleReceptionMessage(sessionId, rawMessage) {
       return {
         reply: latestSlots.length
           ? "That slot is no longer available. Please choose another slot:\n\n" +
-            formatSlots(latestSlots)
+          formatSlots(latestSlots)
           : "That slot is no longer available. Please enter another date.",
         status: "slot_unavailable",
         slots: latestSlots,
@@ -1567,7 +1926,7 @@ async function handleReceptionMessage(sessionId, rawMessage) {
         return {
           reply: refreshedSlots.length
             ? "Another patient has just booked that time. Please choose a different slot:\n\n" +
-              formatSlots(refreshedSlots)
+            formatSlots(refreshedSlots)
             : "That slot has just been booked. Please select another date.",
           status: "slot_unavailable",
           slots: refreshedSlots,
