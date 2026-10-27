@@ -1,0 +1,263 @@
+
+<div class="page-shell">
+  <header class="topbar">
+    <div class="brand-mark">+</div>
+
+    <div class="brand-copy">
+      <strong>CareConnect</strong>
+      <span>AI Medical Receptionist</span>
+    </div>
+
+    <div class="online">
+      <span></span>
+      Reception online
+    </div>
+  </header>
+
+  <main class="content">
+    <section class="intro">
+      <p class="eyebrow">YOUR CARE, CONNECTED</p>
+      <h1>How can we help you today?</h1>
+      <p>
+        Register a patient, find the right doctor, and book an
+        appointment in a few simple steps.
+      </p>
+    </section>
+
+    <section class="chat-card">
+      <div class="chat-heading">
+        <div class="assistant-avatar">✚</div>
+
+        <div>
+          <strong>CareConnect Assistant</strong>
+          <span>Patient registration &amp; appointments</span>
+        </div>
+
+        <button
+          class="new-chat"
+          type="button"
+          (click)="newConversation()"
+          [disabled]="loading"
+        >
+          New chat
+        </button>
+      </div>
+
+      <!-- Chat messages -->
+      <div class="messages" aria-live="polite">
+        <article
+          *ngFor="let message of messages; trackBy: trackByIndex"
+          class="message-row"
+          [class.user-row]="message.role === 'user'"
+        >
+          <div
+            class="bubble"
+            [class.user-bubble]="message.role === 'user'"
+          >
+            <div class="message-text">{{ message.text }}</div>
+
+            <!-- Doctor selection cards -->
+            <div
+              class="doctor-list"
+              *ngIf="message.providers?.length"
+            >
+              <button
+                type="button"
+                class="doctor-card"
+                *ngFor="let doctor of message.providers"
+                [disabled]="loading"
+                (click)="selectDoctor(doctor)"
+              >
+                <span class="doctor-avatar">👨‍⚕️</span>
+
+                <span class="doctor-details">
+                  <strong>{{ doctor.name }}</strong>
+
+                  <span>
+                    {{ doctor.specialty || 'Medical Specialist' }}
+                  </span>
+
+                  <small *ngIf="doctor.qualification">
+                    {{ doctor.qualification }}
+                  </small>
+
+                  <small *ngIf="doctor.experienceYears">
+                    {{ doctor.experienceYears }} years' experience
+                  </small>
+                </span>
+
+                <span class="doctor-arrow">›</span>
+              </button>
+            </div>
+
+            <!-- Existing appointment actions -->
+            <div
+              class="appointment-actions"
+              *ngIf="message.actions?.length"
+            >
+              <p class="appointment-actions-title">
+                Manage your appointment
+              </p>
+
+              <button
+                type="button"
+                class="appointment-action keep-action"
+                [disabled]="loading"
+                (click)="chooseAppointmentAction('keep')"
+              >
+                <span class="action-icon">✓</span>
+
+                <span class="action-copy">
+                  <strong>Keep appointment</strong>
+                  <small>Keep your current booking</small>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                class="appointment-action reschedule-action"
+                [disabled]="loading"
+                (click)="chooseAppointmentAction('reschedule')"
+              >
+                <span class="action-icon">↻</span>
+
+                <span class="action-copy">
+                  <strong>Reschedule appointment</strong>
+                  <small>Choose a different date and time</small>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                class="appointment-action cancel-action"
+                [disabled]="loading"
+                (click)="chooseAppointmentAction('cancel')"
+              >
+                <span class="action-icon">×</span>
+
+                <span class="action-copy">
+                  <strong>Cancel appointment</strong>
+                  <small>Cancel your current booking</small>
+                </span>
+              </button>
+            </div>
+
+            <time>{{ message.time }}</time>
+          </div>
+        </article>
+
+        <!-- Loading indicator -->
+        <div class="typing" *ngIf="loading">
+          <span></span>
+          <span></span>
+          <span></span>
+          Assistant is thinking…
+        </div>
+      </div>
+
+      <!-- Patient type quick actions -->
+      <div
+        class="quick-actions"
+        *ngIf="messages.length <= 1 && !loading"
+      >
+        <button
+          type="button"
+          (click)="sendQuickReply('existing')"
+        >
+          Existing patient
+        </button>
+
+        <button
+          type="button"
+          (click)="sendQuickReply('new')"
+        >
+          New patient
+        </button>
+      </div>
+
+      <!-- Department selection -->
+      <div
+        class="department-section"
+        *ngIf="showDepartmentDropdown"
+      >
+        <p class="department-title">Choose a department</p>
+
+        <p class="department-subtitle">
+          Select a department to check doctor availability.
+        </p>
+
+        <div class="department-cards">
+          <button
+            type="button"
+            class="department-card"
+            [class.selected]="selectedDepartment === 'General Medicine'"
+            [disabled]="loading"
+            (click)="continueWithDepartment('General Medicine')"
+          >
+            <span class="department-icon">🩺</span>
+            <strong>General Medicine</strong>
+            <small>General health and common illnesses</small>
+          </button>
+
+          <button
+            type="button"
+            class="department-card"
+            [class.selected]="selectedDepartment === 'Dermatology'"
+            [disabled]="loading"
+            (click)="continueWithDepartment('Dermatology')"
+          >
+            <span class="department-icon">✦</span>
+            <strong>Dermatology</strong>
+            <small>Skin, hair and nail care</small>
+          </button>
+
+          <button
+            type="button"
+            class="department-card"
+            [class.selected]="selectedDepartment === 'Cardiology'"
+            [disabled]="loading"
+            (click)="continueWithDepartment('Cardiology')"
+          >
+            <span class="department-icon">♡</span>
+            <strong>Cardiology</strong>
+            <small>Heart and cardiovascular care</small>
+          </button>
+        </div>
+
+        <p class="department-loading" *ngIf="loading">
+          Checking doctor availability...
+        </p>
+      </div>
+
+      <!-- Message composer -->
+      <div class="composer">
+        <input
+          type="text"
+          [(ngModel)]="inputText"
+          (keydown.enter)="onEnter($event)"
+          [disabled]="loading"
+          placeholder="Type your answer here…"
+          aria-label="Your message"
+        />
+
+        <button
+          type="button"
+          (click)="sendMessage()"
+          [disabled]="loading || !inputText.trim()"
+          aria-label="Send message"
+        >
+          <span *ngIf="!loading">Send</span>
+          <span *ngIf="loading">…</span>
+        </button>
+      </div>
+
+      <p class="privacy-note">
+        For this proof of concept, use test patient details only.
+      </p>
+    </section>
+
+    <div class="footer-note">
+      CareConnect POC · Appointment slots are rechecked before booking.
+    </div>
+  </main>
+</div>
