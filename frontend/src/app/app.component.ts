@@ -66,6 +66,9 @@ export class AppComponent {
   sessionId = '';
   isBrowser = false;
 
+  // Patient type selection state
+  showPatientTypeActions = false;
+
   // Department selection state
   showDepartmentDropdown = false;
   selectedDepartment = '';
@@ -85,7 +88,7 @@ export class AppComponent {
         this.persistMessages();
       }
 
-      this.updateDepartmentDropdownFromHistory();
+      this.updateControlsFromHistory();
     }
   }
 
@@ -151,6 +154,38 @@ export class AppComponent {
     );
   }
 
+  private isPatientTypePrompt(reply: string): boolean {
+    return /are you an existing patient|existing patient or a new patient|existing patient|new patient/i.test(
+      reply
+    );
+  }
+
+  private isDepartmentPrompt(reply: string): boolean {
+    return /which department|select a department|choose a department|what department|please select general medicine|general medicine, dermatology, or cardiology/i.test(
+      reply
+    );
+  }
+
+  private updateControlsFromHistory(): void {
+    const lastAssistantMessage = [...this.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+
+    if (!lastAssistantMessage) {
+      this.showPatientTypeActions = false;
+      this.showDepartmentDropdown = false;
+      return;
+    }
+
+    this.showPatientTypeActions = this.isPatientTypePrompt(
+      lastAssistantMessage.text
+    );
+
+    this.showDepartmentDropdown = this.isDepartmentPrompt(
+      lastAssistantMessage.text
+    );
+  }
+
   sendQuickReply(value: string): void {
     this.inputText = value;
     this.sendMessage();
@@ -168,7 +203,7 @@ export class AppComponent {
   }
 
   /**
-   * Select a slot if the HTML renders appointment slot buttons.
+   * Select an appointment slot.
    */
   selectSlot(slot: unknown): void {
     if (this.loading || slot == null) {
@@ -192,8 +227,7 @@ export class AppComponent {
   }
 
   /**
-   * Send the patient's selected existing-appointment action.
-   * The backend receives exactly: keep, reschedule, or cancel.
+   * Send the patient's selected appointment action.
    */
   chooseAppointmentAction(action: AppointmentAction): void {
     if (this.loading) {
@@ -217,9 +251,6 @@ export class AppComponent {
       return;
     }
 
-    this.showDepartmentDropdown = false;
-    this.selectedDepartment = '';
-
     this.messages.push({
       role: 'user',
       text: message,
@@ -240,6 +271,7 @@ export class AppComponent {
           // Keep the session ID in sync if the server returns one.
           if (response.sessionId) {
             this.sessionId = response.sessionId;
+
             sessionStorage.setItem(
               'careconnect-session-id',
               this.sessionId
@@ -251,12 +283,17 @@ export class AppComponent {
               ? response.reply
               : 'I could not process that message. Please try again.';
 
+          // Detect patient-type prompts from the backend response.
+          this.showPatientTypeActions = this.isPatientTypePrompt(reply);
+
+          // Detect department prompts from the backend response.
+          this.showDepartmentDropdown = this.isDepartmentPrompt(reply);
+
+          this.selectedDepartment = '';
+
           /*
-           * Show action buttons when the backend detects an existing
-           * appointment and returns status "already_booked".
-           *
-           * The text check also supports a backend response that
-           * includes the appointment-management prompt without a status.
+           * Show appointment action buttons when the backend detects
+           * an existing appointment.
            */
           const hasExistingAppointmentActions =
             response.status === 'already_booked' ||
@@ -276,12 +313,7 @@ export class AppComponent {
               : undefined
           });
 
-          // Show department cards when the receptionist asks for a department.
-          const asksForDepartment =
-            /which department do you need|select a department|choose a department|what department do you need/i.test(
-              reply
-            );
-
+          // Also show department cards when no providers are available.
           const noAvailability =
             /no (?:doctors?|providers?|availability|available doctors|available providers)/i.test(
               reply
@@ -290,14 +322,11 @@ export class AppComponent {
               reply
             );
 
-          if (asksForDepartment || noAvailability) {
+          if (noAvailability) {
             this.showDepartmentDropdown = true;
-            this.selectedDepartment = '';
-          } else {
-            this.showDepartmentDropdown = false;
-            this.selectedDepartment = '';
           }
 
+          // Update appointment completion state.
           if (
             response.status === 'completed' ||
             response.status === 'booked'
@@ -348,22 +377,6 @@ export class AppComponent {
     this.sendTextToReceptionist(department);
   }
 
-  private updateDepartmentDropdownFromHistory(): void {
-    const lastAssistantMessage = [...this.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant');
-
-    if (!lastAssistantMessage) {
-      this.showDepartmentDropdown = false;
-      return;
-    }
-
-    this.showDepartmentDropdown =
-      /which department do you need|select a department|choose a department|what department do you need/i.test(
-        lastAssistantMessage.text
-      );
-  }
-
   newConversation(): void {
     if (!this.isBrowser || this.loading) {
       return;
@@ -371,6 +384,7 @@ export class AppComponent {
 
     this.messages = [];
     this.bookingCompleted = false;
+    this.showPatientTypeActions = false;
     this.showDepartmentDropdown = false;
     this.selectedDepartment = '';
     this.inputText = '';
@@ -385,21 +399,28 @@ export class AppComponent {
       })
       .subscribe({
         next: (response) => {
+          const reply =
+            response.reply ||
+            'Welcome to CareConnect! How can I help you today?';
+
           this.messages.push({
             role: 'assistant',
-            text:
-              response.reply ||
-              'Welcome to CareConnect! How can I help you today?',
+            text: reply,
             time: this.now()
           });
 
-          this.updateDepartmentDropdownFromHistory();
+          this.showPatientTypeActions = this.isPatientTypePrompt(reply);
+          this.showDepartmentDropdown = this.isDepartmentPrompt(reply);
+
+          this.updateControlsFromHistory();
           this.persistMessages();
+
           setTimeout(() => this.scrollToBottom(), 0);
         },
 
         error: () => {
           this.addWelcomeMessage();
+          this.updateControlsFromHistory();
           this.persistMessages();
         }
       });

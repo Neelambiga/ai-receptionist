@@ -25,6 +25,7 @@
     </section>
 
     <section class="chat-card">
+      <!-- Chat header -->
       <div class="chat-heading">
         <div class="assistant-avatar">✚</div>
 
@@ -158,18 +159,18 @@
       <!-- Patient type quick actions -->
       <div
         class="quick-actions"
-        *ngIf="messages.length <= 1 && !loading"
+        *ngIf="showPatientTypeActions && !loading"
       >
         <button
           type="button"
-          (click)="sendQuickReply('existing')"
+          (click)="sendQuickReply('Existing')"
         >
           Existing patient
         </button>
 
         <button
           type="button"
-          (click)="sendQuickReply('new')"
+          (click)="sendQuickReply('New')"
         >
           New patient
         </button>
